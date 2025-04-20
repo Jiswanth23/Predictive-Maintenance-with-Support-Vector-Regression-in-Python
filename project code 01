@@ -1,0 +1,94 @@
+import numpy as np
+from sklearn.svm import SVR
+from sklearn.preprocessing import StandardScaler
+from sklearn.datasets import load_diabetes
+from flask import Flask, request, jsonify, redirect  # Added redirect
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
+import plotly.graph_objs as go
+
+# Initialize Flask and Dash
+app = Flask(__name__)
+dash_app = dash.Dash(__name__, server=app, url_base_pathname='/dash/')
+
+# Load built-in diabetes dataset (simulating sensor data)
+data = load_diabetes()
+X = data.data[:, [2, 5, 8]]  # Select 3 features as proxies for temperature, vibration, pressure
+y = np.clip(data.target / 10, 0, 1000)  # Scale target to simulate RUL (0–1000 hours)
+
+# Preprocess data
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Train SVR model
+svr_model = SVR(kernel='rbf', C=1.0, epsilon=0.1)
+svr_model.fit(X_scaled, y)
+
+# Flask API endpoint for predictions
+@app.route('/predict', methods=['POST'])
+def predict():
+    data = request.json
+    inputs = np.array([[data['param1'], data['param2'], data['param3']]])
+    inputs_scaled = scaler.transform(inputs)
+    prediction = svr_model.predict(inputs_scaled)[0]
+    return jsonify({'rul': prediction})
+
+# Add root route to redirect to /dash/
+@app.route('/')
+def home():
+    return redirect('/dash/')  # Redirects to dashboard
+    # Alternatively, for a welcome page:
+    # return "<h1>Predictive Maintenance</h1><a href='/dash/'>Go to Dashboard</a>"
+
+# Dash layout
+dash_app.layout = html.Div([
+    html.H1('Predictive Maintenance Dashboard', style={'textAlign': 'center', 'color': '#333'}),
+    html.Div([
+        html.Label('Parameter 1 (e.g., Temperature):'),
+        dcc.Input(id='param1', type='number', value=0.0, style={'width': '100%', 'margin': '10px'}),
+        html.Label('Parameter 2 (e.g., Vibration):'),
+        dcc.Input(id='param2', type='number', value=0.0, style={'width': '100%', 'margin': '10px'}),
+        html.Label('Parameter 3 (e.g., Pressure):'),
+        dcc.Input(id='param3', type='number', value=0.0, style={'width': '100%', 'margin': '10px'}),
+        html.Button('Predict RUL', id='predict-btn', style={'margin': '10px', 'padding': '10px'}),
+    ], style={'width': '50%', 'margin': 'auto'}),
+    html.Div(id='output', style={'textAlign': 'center', 'marginTop': '20px'}),
+    dcc.Graph(id='graph', style={'marginTop': '20px'})
+])
+
+# Dash callback for predictions and visualization
+@dash_app.callback(
+    [Output('output', 'children'), Output('graph', 'figure')],
+    [Input('predict-btn', 'n_clicks')],
+    [dash.dependencies.State('param1', 'value'),
+     dash.dependencies.State('param2', 'value'),
+     dash.dependencies.State('param3', 'value')]
+)
+def update_output(n_clicks, param1, param2, param3):
+    if n_clicks is None or param1 is None or param2 is None or param3 is None:
+        return "Please enter all parameters.", {}
+
+    inputs = np.array([[param1, param2, param3]])
+    inputs_scaled = scaler.transform(inputs)
+    rul = svr_model.predict(inputs_scaled)[0]
+
+    # Create Plotly graph
+    fig = go.Figure(data=[
+        go.Bar(
+            x=['Parameter 1', 'Parameter 2', 'Parameter 3', 'Predicted RUL'],
+            y=[param1, param2, param3, rul],
+            marker_color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+        )
+    ])
+    fig.update_layout(
+        title='Input Parameters and Predicted RUL',
+        yaxis_title='Value',
+        template='plotly_white'
+    )
+
+    return f"Predicted Remaining Useful Life: {rul:.2f} hours", fig
+
+# Run the app
+if __name__ == '__main__':
+    app.run(debug=True)
